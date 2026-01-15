@@ -334,8 +334,10 @@ public resetState(): void {
     }
 
     const surgeMult = this.config.deltaSurgeMultiplier ?? 1.8;
-    const longThreshold = deltaSMA * surgeMult;
-    const shortThreshold = deltaSMA * -surgeMult;
+    // const longThreshold = deltaSMA * surgeMult;
+    // const shortThreshold = deltaSMA * -surgeMult;
+    const longThreshold = Math.abs(deltaSMA) * surgeMult;
+    const shortThreshold = -Math.abs(deltaSMA) * surgeMult;
 
     const passDeltaLong = delta > spike && delta > longThreshold;
     const passDeltaShort = delta < -spike && delta < shortThreshold;
