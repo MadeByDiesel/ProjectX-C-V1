@@ -438,8 +438,8 @@ public resetState(): void {
     }
 
     const surgeMult = this.config.deltaSurgeMultiplier ?? 1.8;
-    const longThreshold = deltaSMA * surgeMult;
-    const shortThreshold = deltaSMA * -surgeMult;
+    const longThreshold = Math.abs(deltaSMA) * surgeMult;
+    const shortThreshold = -Math.abs(deltaSMA) * surgeMult;
 
     // Restored fade check for intra-bar - includes current delta in peakAbs
     const peakAbs = Math.max(...this.intraBarDeltaHistory.map(e => Math.abs(e.delta)), Math.abs(delta), 0);
