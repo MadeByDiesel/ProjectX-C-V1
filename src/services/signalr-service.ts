@@ -1,4 +1,4 @@
-// src/services/signalr-service.ts
+// reverted to Nov3 code, added updateToken() method, added staleness detection
 import * as signalR from '@microsoft/signalr';
 import { Logger } from '../utils/logger';
 import {
@@ -21,6 +21,11 @@ export class SignalRService {
   private firstQuoteLogged = false;
   private subscribedContracts = new Set<string>();
 
+  // Staleness detection
+  private lastTickTime: number = 0;
+  private heartbeatInterval: NodeJS.Timeout | null = null;
+  private isReconnecting: boolean = false;
+
   constructor() {
     this.logger = new Logger('SignalRService');
   }
@@ -31,6 +36,66 @@ export class SignalRService {
 
     await this.initializeUserHub();
     await this.initializeMarketHub();
+
+    this.lastTickTime = Date.now();
+    this.startHeartbeat();
+  }
+
+  /**
+   * Update JWT token (called by projectx-client after token refresh)
+   */
+  updateToken(newToken: string): void {
+    this.jwtToken = newToken;
+    this.logger.info('JWT token updated for SignalR');
+  }
+
+  // ========== Staleness Detection ==========
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    this.heartbeatInterval = setInterval(() => this.checkStaleness(), 30000);
+    this.logger.info('Staleness heartbeat started');
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+  }
+
+  private isMarketHours(): boolean {
+    const now = new Date();
+    const day = now.getUTCDay();
+    const hour = now.getUTCHours();
+    if (day === 6) return false; // Saturday
+    if (day === 0 && hour < 23) return false; // Sunday before 6pm ET
+    if (day === 5 && hour >= 22) return false; // Friday after 5pm ET
+    if (hour === 22) return false; // Daily maintenance 5-6pm ET
+    return true;
+  }
+
+  private async checkStaleness(): Promise<void> {
+    if (this.isReconnecting || !this.isMarketHours() || this.subscribedContracts.size === 0) return;
+
+    const staleMs = Date.now() - this.lastTickTime;
+    if (staleMs > 60000) {
+      this.logger.warn(`No market data for ${Math.round(staleMs / 1000)}s - forcing reconnect`);
+      this.isReconnecting = true;
+      try {
+        await this.disconnect();
+        if (this.jwtToken && this.selectedAccountId) {
+          await this.initializeUserHub();
+          await this.initializeMarketHub();
+          await this.resubscribeAllContracts();
+          this.lastTickTime = Date.now();
+          this.logger.info('Staleness reconnect completed');
+        }
+      } catch (err) {
+        this.logger.error('Staleness reconnect failed:', err);
+      } finally {
+        this.isReconnecting = false;
+      }
+    }
   }
 
   // ========== User Hub ==========
@@ -142,38 +207,86 @@ export class SignalRService {
     }
 
     conn.on('GatewayQuote', (contractId: string, data: GatewayQuote) => {
+      this.lastTickTime = Date.now();
+
       if (!this.firstQuoteLogged) {
         this.logger.info(
-          `First GatewayQuote: contractId=${contractId}, symbol=${(data as any).symbol ?? 'N/A'}, lastPrice=${data.lastPrice}`
+          `First GatewayQuote: contractId=${contractId}, symbol=${(data as any).symbol ?? 'N/A'}, lastPrice=${(data as any).lastPrice}`
         );
         this.firstQuoteLogged = true;
       }
-      this.emit('market_data', { contractId, ...data });
-    });
 
+      // Normalize lastPrice for downstream consumers
+      const q: any = data as any;
+      const normalizedLast =
+        (Number.isFinite(q.lastPrice) ? q.lastPrice : undefined) ??
+        (Number.isFinite(q.lastTrade) ? q.lastTrade : undefined) ??
+        (
+          Number.isFinite(q.bestBid) && Number.isFinite(q.bestAsk)
+            ? (q.bestBid + q.bestAsk) / 2
+            : (Number.isFinite(q.bestBid)
+                ? q.bestBid
+                : (Number.isFinite(q.bestAsk) ? q.bestAsk : undefined))
+        );
+
+      if (Number.isFinite(normalizedLast)) {
+        this.emit('market_data', { contractId, ...data, lastPrice: normalizedLast });
+      }
+    });
+    
     conn.on('GatewayTrade', (contractId: string, data: GatewayTrade) => {
+      this.lastTickTime = Date.now();
       this.emit('market_trade', { contractId, ...data });
     });
 
-    conn.on('GatewayDepth', (contractId: string, data: GatewayDepth) => {
-      this.emit('market_depth', { contractId, ...data });
+    conn.on('GatewayDepth', (contractId: string, data: GatewayDepth | GatewayDepth[] | null) => {
+      this.lastTickTime = Date.now();
+
+      // Normalize: Topstep may send an array of entries (with nulls)
+      if (Array.isArray(data)) {
+        for (const entry of data) {
+          if (!entry) continue;
+          const { timestamp, type, price, volume, currentVolume } = entry as any;
+          this.emit('market_depth', {
+            contractId,
+            timestamp: timestamp ?? new Date().toISOString(),
+            type,
+            price,
+            volume,
+            currentVolume
+          });
+        }
+        return;
+      }
+
+      if (data && typeof data === 'object') {
+        const { timestamp, type, price, volume, currentVolume } = data as any;
+        this.emit('market_depth', {
+          contractId,
+          timestamp: timestamp ?? new Date().toISOString(),
+          type,
+          price,
+          volume,
+          currentVolume
+        });
+      }
     });
 
     conn.onreconnected(async () => {
       this.logger.info('Market Hub reconnected — re-subscribing existing contracts');
       await this.resubscribeAllContracts();
+      this.lastTickTime = Date.now();
 
-      // --- Restore open MNQ position after reconnect ---
+      // Restore open MNQ position after reconnect
       try {
-        const { projectXClient, trader } = global as any; // both already initialized in server.ts
+        const { projectXClient, trader } = global as any;
         if (projectXClient && trader) {
-          const openPositions = await projectXClient.searchOpenPositions();
+          const openPositions = await projectXClient.getPositions();
           const mnq = openPositions.find((p: any) => p.contractId?.includes('MNQ'));
           if (mnq) {
             const side = mnq.side === 1 ? 'short' : 'long';
             const avgPrice = mnq.avgPrice;
-            const currentATR = trader.calculator.calculateATR();
-            trader.calculator.setPosition(avgPrice, side, currentATR);
+            trader.calculator.setPosition(avgPrice, side);
             this.logger.info('[reconnect] Restored open MNQ position', { side, avgPrice });
           } else {
             this.logger.info('[reconnect] No open MNQ positions to restore');
@@ -188,10 +301,6 @@ export class SignalRService {
   }
 
   // ========== Subscriptions ==========
-  /**
-   * Batch subscribe to quotes + trades for multiple contracts.
-   * Tracks subscriptions for reconnect.
-   */
   async subscribeToContracts(contractIds: string[]): Promise<void> {
     const conn = this.marketHubConnection;
     if (!conn || contractIds.length === 0) return;
@@ -200,6 +309,7 @@ export class SignalRService {
       try {
         await conn.invoke('SubscribeContractQuotes', id);
         await conn.invoke('SubscribeContractTrades', id);
+        await conn.invoke('SubscribeContractMarketDepth', id);
         this.subscribedContracts.add(id);
         this.logger.info(`Subscribed to market data for contract: ${id}`);
       } catch (error) {
@@ -208,9 +318,6 @@ export class SignalRService {
     }
   }
 
-  /**
-   * Backward-compatible single-contract subscribe. (Used by projectx-client)
-   */
   async subscribeToMarketData(contractId: string): Promise<void> {
     return this.subscribeToContracts([contractId]);
   }
@@ -222,6 +329,7 @@ export class SignalRService {
     try {
       await conn.invoke('UnsubscribeContractQuotes', contractId);
       await conn.invoke('UnsubscribeContractTrades', contractId);
+      await conn.invoke('UnsubscribeContractMarketDepth', contractId);
       this.subscribedContracts.delete(contractId);
       this.logger.info(`Unsubscribed from market data for contract: ${contractId}`);
     } catch (error) {
@@ -237,6 +345,7 @@ export class SignalRService {
       try {
         await conn.invoke('SubscribeContractQuotes', id);
         await conn.invoke('SubscribeContractTrades', id);
+        await conn.invoke('SubscribeContractMarketDepth', id);
         this.logger.info(`Re-subscribed contract after reconnect: ${id}`);
       } catch (err) {
         this.logger.error(`Failed to re-subscribe contract ${id} after reconnect`, err);
@@ -265,6 +374,7 @@ export class SignalRService {
 
   // ========== Lifecycle ==========
   async disconnect(): Promise<void> {
+    this.stopHeartbeat();
     if (this.userHubConnection) {
       await this.userHubConnection.stop();
     }

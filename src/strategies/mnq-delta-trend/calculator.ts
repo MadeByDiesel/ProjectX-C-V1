@@ -123,10 +123,6 @@ public resetState(): void {
       return { signal: 'hold', reason: 'Warm-up in progress', confidence: 0 };
     }
 
-    if (!this.isInTradingSession(incoming.timestamp)) {
-      return { signal: 'hold', reason: 'Out of session', confidence: 0 };
-    }
-
     const prevClose3m = this.bars3min.length ? this.bars3min[this.bars3min.length - 1].close : NaN;
     const vol = Number.isFinite(incoming.volume as any) ? Number(incoming.volume) : 0;
     const signedVol =
@@ -153,6 +149,10 @@ public resetState(): void {
     marketState.atr = Number.isFinite(atr) ? atr : 0;
     marketState.higherTimeframeTrend = trend;
     marketState.deltaCumulative = (marketState.deltaCumulative ?? 0) + (bar.delta ?? 0);
+
+    if (!this.isInTradingSession(incoming.timestamp)) {
+      return { signal: 'hold', reason: 'Out of session', confidence: 0 };
+    }
 
     const exitSignal = this.checkExitConditions(bar, marketState);
     if (exitSignal) return exitSignal;
@@ -334,8 +334,10 @@ public resetState(): void {
     }
 
     const surgeMult = this.config.deltaSurgeMultiplier ?? 1.8;
-    const longThreshold = deltaSMA * surgeMult;
-    const shortThreshold = deltaSMA * -surgeMult;
+    // const longThreshold = deltaSMA * surgeMult;
+    // const shortThreshold = deltaSMA * -surgeMult;
+    const longThreshold = Math.abs(deltaSMA) * surgeMult;
+    const shortThreshold = -Math.abs(deltaSMA) * surgeMult;
 
     const passDeltaLong = delta > spike && delta > longThreshold;
     const passDeltaShort = delta < -spike && delta < shortThreshold;
@@ -436,8 +438,8 @@ public resetState(): void {
     }
 
     const surgeMult = this.config.deltaSurgeMultiplier ?? 1.8;
-    const longThreshold = deltaSMA * surgeMult;
-    const shortThreshold = deltaSMA * -surgeMult;
+    const longThreshold = Math.abs(deltaSMA) * surgeMult;
+    const shortThreshold = -Math.abs(deltaSMA) * surgeMult;
 
     // Restored fade check for intra-bar - includes current delta in peakAbs
     const peakAbs = Math.max(...this.intraBarDeltaHistory.map(e => Math.abs(e.delta)), Math.abs(delta), 0);
