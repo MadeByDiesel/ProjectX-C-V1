@@ -406,6 +406,10 @@ export class ProjectXClient {
     this.signalRService.on('market_data', callback);
   }
 
+  onMarketTrade(callback: (data: any) => void): void {
+    this.signalRService.on('market_trade', callback);
+  }
+
   onDepth(callback: (data: { contractId: string; timestamp: string; type: number; price: number; volume: number; currentVolume: number }) => void): void {
     (this.signalRService as any).on('market_depth', callback);
   }

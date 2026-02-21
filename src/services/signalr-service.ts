@@ -1,4 +1,4 @@
-// reverted to Nov3 code, added updateToken() method, added staleness detection
+// Feb19 fixed inflated bug GatewayTrade wired properly
 import * as signalR from '@microsoft/signalr';
 import { Logger } from '../utils/logger';
 import {
@@ -211,12 +211,12 @@ export class SignalRService {
 
       if (!this.firstQuoteLogged) {
         this.logger.info(
-          `First GatewayQuote: contractId=${contractId}, symbol=${(data as any).symbol ?? 'N/A'}, lastPrice=${(data as any).lastPrice}`
+          `First GatewayQuote: contractId=${contractId}, symbol=${(data as any).symbol ?? 'N/A'}, bestBid=${(data as any).bestBid}, bestAsk=${(data as any).bestAsk}`
         );
         this.firstQuoteLogged = true;
       }
 
-      // Normalize lastPrice for downstream consumers
+      // BID/ASK only — volume and trade data come from GatewayTrade
       const q: any = data as any;
       const normalizedLast =
         (Number.isFinite(q.lastPrice) ? q.lastPrice : undefined) ??
@@ -230,15 +230,35 @@ export class SignalRService {
         );
 
       if (Number.isFinite(normalizedLast)) {
-        this.emit('market_data', { contractId, ...data, lastPrice: normalizedLast });
+        this.emit('market_data', {
+          contractId,
+          lastPrice: normalizedLast,
+          bestBid: Number.isFinite(q.bestBid) ? q.bestBid : undefined,
+          bestAsk: Number.isFinite(q.bestAsk) ? q.bestAsk : undefined,
+          timestamp: q.timestamp || q.lastUpdated,
+        });
       }
     });
     
-    conn.on('GatewayTrade', (contractId: string, data: GatewayTrade) => {
+    conn.on('GatewayTrade', (contractId: string, payload: any) => {
       this.lastTickTime = Date.now();
-      this.emit('market_trade', { contractId, ...data });
-    });
 
+      // GatewayTrade payload arrives as a JSON array (sometimes batched)
+      const raw = typeof payload === 'string' ? JSON.parse(payload) : payload;
+      const trades = Array.isArray(raw) ? raw : [raw];
+
+      for (const trade of trades) {
+        if (!trade || typeof trade.price !== 'number') continue;
+        this.emit('market_trade', {
+          contractId,
+          price: trade.price,
+          volume: trade.volume ?? 1,   // per-trade contract count
+          type: trade.type,             // 0 = Buy, 1 = Sell (aggressor side)
+          timestamp: trade.timestamp,
+        });
+      }
+    });
+    
     conn.on('GatewayDepth', (contractId: string, data: GatewayDepth | GatewayDepth[] | null) => {
       this.lastTickTime = Date.now();
 

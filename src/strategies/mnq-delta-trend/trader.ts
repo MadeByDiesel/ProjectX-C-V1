@@ -15,7 +15,6 @@ export class MNQDeltaTrendTrader {
 
   // Tick → bar accumulators
   private lastPriceByContract = new Map<string, number>();
-  private lastCumVolByContract = new Map<string, number>();
   private signedVolInBarByContract = new Map<string, number>();
   private volInBarByContract = new Map<string, number>();
   private prevClosedBarClose: number | null = null;
@@ -53,6 +52,7 @@ export class MNQDeltaTrendTrader {
   };
 
   private marketDataHandler = (q: GatewayQuote & { contractId: string }) => this.onQuote(q);
+  private marketTradeHandler = (t: any) => this.onTrade(t);
 
   /** Post trade events to local NT8 webhook listener (optional) */
   private async postWebhook(action: 'BUY' | 'SELL' | 'FLAT', qty?: number): Promise<void> {
@@ -121,7 +121,6 @@ export class MNQDeltaTrendTrader {
   private resetTraderState(): void {
     // Clear all Maps
     this.lastPriceByContract.clear();
-    this.lastCumVolByContract.clear();
     this.signedVolInBarByContract.clear();
     this.volInBarByContract.clear();
 
@@ -163,6 +162,7 @@ export class MNQDeltaTrendTrader {
       await this.client.connectWebSocket();
       await this.client.getSignalRService().subscribeToMarketData(this.contractId);
       this.client.onMarketData(this.marketDataHandler);
+      this.client.onMarketTrade(this.marketTradeHandler);
     } catch (err) {
       console.error('[MNQDeltaTrend][start] WebSocket/MarketData subscription failed:', err);
     }
@@ -237,33 +237,9 @@ export class MNQDeltaTrendTrader {
       this.liveBarLow = Math.min(this.liveBarLow!, px);
     }
 
-    // === Per-tick delta & volume accumulation (cumulative → delta) ===
-    const prevPx = this.lastPriceByContract.get(contractId);
-    const prevCum = this.lastCumVolByContract.get(contractId);
-    const cumVol = (q as any).volume ?? 0; // GatewayQuote 'volume' treated as cumulative
+    // === Price tracking only — volume/delta now handled by onTrade() ===
 
-    let dVol = 0;
-    if (typeof prevCum === 'number') {
-      if (cumVol >= prevCum) {
-        dVol = cumVol - prevCum;
-      } else {
-        // Broker reset detected
-        dVol = cumVol;
-        this.lastCumVolByContract.set(contractId, 0);
-      }
-    } else {
-      dVol = cumVol;
-    }
-
-    // Accumulate volume
-    this.volInBarByContract.set(contractId, (this.volInBarByContract.get(contractId) ?? 0) + (Number.isFinite(dVol) ? dVol : 0));
-
-    // Per-tick signed delta for exhaustion tracking (fade filter)
-    const signed = typeof prevPx === 'number'
-      ? (px > prevPx ? dVol : px < prevPx ? -dVol : 0)
-      : 0;
-
-    // Pine-style delta: recalculate entire bar volume direction vs previous closed bar
+    // Pine-style delta: recalculate bar delta vs previous closed bar
     const barVol = this.volInBarByContract.get(contractId) ?? 0;
     let barDelta = 0;
     if (this.prevClosedBarClose !== null) {
@@ -272,12 +248,8 @@ export class MNQDeltaTrendTrader {
     }
     this.signedVolInBarByContract.set(contractId, barDelta);
 
-    // Push per-tick signed delta into calculator's intra-bar window
-    this.calculator.pushIntraBarDelta(signed, nowMs);
-
-    // Now update last refs
+    // Update price ref (used by onTrade for tick direction, and by bar close)
     this.lastPriceByContract.set(contractId, px);
-    this.lastCumVolByContract.set(contractId, cumVol);
 
     // === Tick-level protective exits (hard stop / trail) ===
     if (this.calculator.hasPosition() && !this.isFlattening) {
@@ -315,6 +287,39 @@ export class MNQDeltaTrendTrader {
     }
   }
 
+  /**
+   * Handle GatewayTrade events — per-trade volume and delta accumulation.
+   * Each call is a single trade with: price, volume (per-trade size), type (0=Buy, 1=Sell)
+   */
+  private onTrade(t: any): void {
+    if (!this.running) return;
+    if (t.contractId !== this.contractId) return;
+
+    const px = t.price;
+    const vol = t.volume ?? 1;
+    if (!Number.isFinite(px) || !Number.isFinite(vol)) return;
+
+    const contractId = t.contractId;
+    const nowMs = Date.now();
+
+    // Accumulate per-trade volume into bar
+    this.volInBarByContract.set(
+      contractId,
+      (this.volInBarByContract.get(contractId) ?? 0) + vol
+    );
+
+    // Per-tick signed delta for exhaustion tracking (fade filter)
+    const prevPx = this.lastPriceByContract.get(contractId);
+    const signed = typeof prevPx === 'number'
+      ? (px > prevPx ? vol : px < prevPx ? -vol : 0)
+      : 0;
+
+    this.calculator.pushIntraBarDelta(signed, nowMs);
+
+    // Update price ref
+    this.lastPriceByContract.set(contractId, px);
+  }
+
   private maybeCloseBarByClock(): void {
     if (!this.running) return;
     if (this.barStartMs === null) return;
@@ -347,7 +352,7 @@ export class MNQDeltaTrendTrader {
     if (this.barStartMs === null) return;
 
     const formingBar: BarData = {
-      timestamp: new Date(this.barStartMs + this.barStepMs - 1).toISOString(), // end-of-bucket timestamp for gate
+      timestamp: new Date(this.barStartMs + this.barStepMs - 1).toISOString(),
       open: this.liveBarOpen!,
       high: this.liveBarHigh!,
       low: this.liveBarLow!,
@@ -360,7 +365,6 @@ export class MNQDeltaTrendTrader {
     const signal = this.calculator.evaluateFormingBar(formingBar, this.marketState, accumulationMs);
 
     if (signal.signal !== 'hold') {
-      // Route through unified handler (applies race guard + ATR snapshot + order)
       void this.executeIntraBarSignal(signal, formingBar);
     }
   }
@@ -408,11 +412,15 @@ export class MNQDeltaTrendTrader {
     // Always update calculator state on every bar close
     const signal = this.calculator.processNewBar(closedBar as any, this.marketState as any);
 
-    // Only ACT on bar-close signals when intrabar is OFF (and not reconciling)
+    // Bar-close signals are always evaluated by processNewBar (which stores pendingBarCloseSignal).
+    // When intra-bar is ON, the signal is stored and executed on the next bar's first tick.
+    // When intra-bar is OFF, execute immediately.
     if (!this.config.useIntraBarDetection && !this.reconciling) {
       void this.handleSignal(signal, closedBar);
     } else {
-      console.debug('[MNQDeltaTrend][barClose] state updated; orders suppressed (intra-bar ON or reconciling)');
+      if (signal.signal === 'buy' || signal.signal === 'sell') {
+        console.info(`[MNQDeltaTrend][barClose] signal=${signal.signal} stored pending for intra-bar execution`);
+      }
     }
     
     console.debug(
