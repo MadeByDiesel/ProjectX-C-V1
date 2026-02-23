@@ -352,7 +352,7 @@ export class MNQDeltaTrendTrader {
     if (this.barStartMs === null) return;
 
     const formingBar: BarData = {
-      timestamp: new Date(this.barStartMs + this.barStepMs - 1).toISOString(),
+      timestamp: new Date(this.barStartMs + this.barStepMs - 1).toISOString(), // end-of-bucket timestamp for gate
       open: this.liveBarOpen!,
       high: this.liveBarHigh!,
       low: this.liveBarLow!,
@@ -365,6 +365,7 @@ export class MNQDeltaTrendTrader {
     const signal = this.calculator.evaluateFormingBar(formingBar, this.marketState, accumulationMs);
 
     if (signal.signal !== 'hold') {
+      // Route through unified handler (applies race guard + ATR snapshot + order)
       void this.executeIntraBarSignal(signal, formingBar);
     }
   }
@@ -412,19 +413,16 @@ export class MNQDeltaTrendTrader {
     // Always update calculator state on every bar close
     const signal = this.calculator.processNewBar(closedBar as any, this.marketState as any);
 
-    // Bar-close signals are always evaluated by processNewBar (which stores pendingBarCloseSignal).
-    // When intra-bar is ON, the signal is stored and executed on the next bar's first tick.
-    // When intra-bar is OFF, execute immediately.
+    // Only ACT on bar-close signals when intrabar is OFF (and not reconciling)
     if (!this.config.useIntraBarDetection && !this.reconciling) {
       void this.handleSignal(signal, closedBar);
     } else {
-      if (signal.signal === 'buy' || signal.signal === 'sell') {
-        console.info(`[MNQDeltaTrend][barClose] signal=${signal.signal} stored pending for intra-bar execution`);
-      }
+      console.debug('[MNQDeltaTrend][barClose] state updated; orders suppressed (intra-bar ON or reconciling)');
     }
     
+    const realNetDelta = this.calculator.getIntraBarDeltaHistory().reduce((sum, e) => sum + e.delta, 0);
     console.debug(
-      `[MNQDeltaTrend][barClose] t=${closedBar.timestamp} O:${closedBar.open} H:${closedBar.high} L:${closedBar.low} C:${closedBar.close} Δ:${closedBar.delta} V:${closedBar.volume}`
+      `[MNQDeltaTrend][barClose] t=${closedBar.timestamp} O:${closedBar.open} H:${closedBar.high} L:${closedBar.low} C:${closedBar.close} Δ:${closedBar.delta} netΔ:${realNetDelta} V:${closedBar.volume}`
     );
 
     this.barOpenPx = closePx!;
