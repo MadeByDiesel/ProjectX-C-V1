@@ -501,7 +501,11 @@ public resetState(): void {
     // Trail uses uncapped ATR (lets winners breathe)
     const atrSeedForTrail = liveAtr;
 
-    const slDist = atrSeedForStop * (this.config.atrStopLossMultiplier ?? 0.75);
+    // const slDist = atrSeedForStop * (this.config.atrStopLossMultiplier ?? 0.75);
+    const slDist = this.config.useAtrCap
+      ? Math.min(liveAtr * (this.config.atrStopLossMultiplier ?? 0.75), Number(this.config.atrCap ?? 16))
+      : liveAtr * (this.config.atrStopLossMultiplier ?? 0.75);
+    
     const stopLoss = direction === 'long' ? entryPrice - slDist : entryPrice + slDist;
 
     this.currentPosition = { entryPrice, entryTime: Date.now(), direction, stopLoss, atrSeedForStop, atrSeedForTrail };
