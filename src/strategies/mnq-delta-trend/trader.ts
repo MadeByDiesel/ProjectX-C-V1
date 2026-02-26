@@ -1,4 +1,6 @@
 // src/strategies/mnq-delta-trend/trader.ts - Dec 26 Claude 
+// applied real net delta fix Feb26
+// fixed aggresor side
 import { ProjectXClient } from '../../services/projectx-client';
 import { MNQDeltaTrendCalculator } from './calculator';
 import { StrategyConfig } from './types';
@@ -308,16 +310,10 @@ export class MNQDeltaTrendTrader {
       (this.volInBarByContract.get(contractId) ?? 0) + vol
     );
 
-    // Per-tick signed delta for exhaustion tracking (fade filter)
-    const prevPx = this.lastPriceByContract.get(contractId);
-    const signed = typeof prevPx === 'number'
-      ? (px > prevPx ? vol : px < prevPx ? -vol : 0)
-      : 0;
+    // Aggressor-side delta from GatewayTrade: type 0=Buy, 1=Sell
+    const signed = t.type === 0 ? vol : t.type === 1 ? -vol : 0;
 
     this.calculator.pushIntraBarDelta(signed, nowMs);
-
-    // Update price ref
-    this.lastPriceByContract.set(contractId, px);
   }
 
   private maybeCloseBarByClock(): void {
@@ -358,7 +354,7 @@ export class MNQDeltaTrendTrader {
       low: this.liveBarLow!,
       close: currentPrice,
       volume: this.volInBarByContract.get(this.contractId) ?? 0,
-      delta: this.signedVolInBarByContract.get(this.contractId) ?? 0,
+      delta: this.calculator.getIntraBarDeltaHistory().reduce((sum, e) => sum + e.delta, 0),
     };
 
     const accumulationMs = this.liveBarStartMs ? (nowMs - this.liveBarStartMs) : 0;
