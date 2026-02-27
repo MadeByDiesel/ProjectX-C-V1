@@ -1,5 +1,5 @@
 // src/strategies/mnq-delta-trend/trader.ts - Dec 26 Claude 
-// applied real net delta fix Feb26
+// applied real net delta fix Feb27  reverted aggressor type back to tick direction
 // fixed aggresor side
 import { ProjectXClient } from '../../services/projectx-client';
 import { MNQDeltaTrendCalculator } from './calculator';
