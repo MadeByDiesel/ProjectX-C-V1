@@ -1,5 +1,5 @@
 // src/strategies/mnq-delta-trend/trader.ts - Dec 26 Claude 
-// applied real net delta fix Feb27  reverted aggressor type back to tick direction
+// applied tick direction fix Mar02 — dedicated lastTradePriceByContract, no quote contamination
 // fixed aggresor side
 import { ProjectXClient } from '../../services/projectx-client';
 import { MNQDeltaTrendCalculator } from './calculator';
@@ -17,6 +17,7 @@ export class MNQDeltaTrendTrader {
 
   // Tick → bar accumulators
   private lastPriceByContract = new Map<string, number>();
+  private lastTradePriceByContract = new Map<string, number>(); // trade-only ref for tick direction delta
   private signedVolInBarByContract = new Map<string, number>();
   private volInBarByContract = new Map<string, number>();
   private prevClosedBarClose: number | null = null;
@@ -123,6 +124,7 @@ export class MNQDeltaTrendTrader {
   private resetTraderState(): void {
     // Clear all Maps
     this.lastPriceByContract.clear();
+    this.lastTradePriceByContract.clear();
     this.signedVolInBarByContract.clear();
     this.volInBarByContract.clear();
 
@@ -310,8 +312,15 @@ export class MNQDeltaTrendTrader {
       (this.volInBarByContract.get(contractId) ?? 0) + vol
     );
 
-    // Aggressor-side delta from GatewayTrade: type 0=Buy, 1=Sell
-    const signed = t.type === 0 ? vol : t.type === 1 ? -vol : 0;
+    // Tick direction delta: compare trade price to last TRADE price (not quote)
+    // Dedicated lastTradePriceByContract avoids quote contamination from onQuote
+    const lastTradePx = this.lastTradePriceByContract.get(contractId);
+    let signed = 0;
+    if (lastTradePx !== undefined) {
+      if (px > lastTradePx) signed = vol;
+      else if (px < lastTradePx) signed = -vol;
+    }
+    this.lastTradePriceByContract.set(contractId, px);
 
     this.calculator.pushIntraBarDelta(signed, nowMs);
   }
