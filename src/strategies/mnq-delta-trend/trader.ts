@@ -1,5 +1,5 @@
 // src/strategies/mnq-delta-trend/trader.ts - Dec 26 Claude 
-// applied tick direction fix Mar02 — dedicated lastTradePriceByContract, no quote contamination
+// Mar03 fix — dedicated lastTradePriceByContract eliminates quote contamination
 // fixed aggresor side
 import { ProjectXClient } from '../../services/projectx-client';
 import { MNQDeltaTrendCalculator } from './calculator';
@@ -17,7 +17,7 @@ export class MNQDeltaTrendTrader {
 
   // Tick → bar accumulators
   private lastPriceByContract = new Map<string, number>();
-  private lastTradePriceByContract = new Map<string, number>(); // trade-only ref for tick direction delta
+  private lastTradePriceByContract = new Map<string, number>(); // trade-only ref — quotes cannot touch this
   private signedVolInBarByContract = new Map<string, number>();
   private volInBarByContract = new Map<string, number>();
   private prevClosedBarClose: number | null = null;
@@ -312,13 +312,14 @@ export class MNQDeltaTrendTrader {
       (this.volInBarByContract.get(contractId) ?? 0) + vol
     );
 
-    // Tick direction delta: compare trade price to last TRADE price (not quote)
-    // Dedicated lastTradePriceByContract avoids quote contamination from onQuote
+    // Tick direction delta matching Python main.py parity
+    // >= last trade price = uptick (+vol), < last trade price = downtick (-vol)
+    // Uses dedicated lastTradePriceByContract — onQuote cannot contaminate
     const lastTradePx = this.lastTradePriceByContract.get(contractId);
     let signed = 0;
     if (lastTradePx !== undefined) {
-      if (px > lastTradePx) signed = vol;
-      else if (px < lastTradePx) signed = -vol;
+      if (px >= lastTradePx) signed = vol;
+      else signed = -vol;
     }
     this.lastTradePriceByContract.set(contractId, px);
 
