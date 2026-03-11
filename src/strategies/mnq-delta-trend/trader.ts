@@ -1,6 +1,10 @@
 // src/strategies/mnq-delta-trend/trader.ts - Dec 26 Claude 
-// Mar03 fix — dedicated lastTradePriceByContract eliminates quote contamination
-// fixed aggresor side
+// Mar10 fix — restore Nov 13 single-path delta architecture
+//   1. Removed prevClosedBarClose Pine-style recalculation from onQuote
+//   2. onTrade: reverted >= to strict >/< with zero on equal (bidirectional)
+//   3. onTrade: accumulates into signedVolInBarByContract (one path for both forming + closed bar)
+//   4. checkIntraBarSignal: forming bar reads signedVolInBarByContract (same source as closed bar)
+// Mar03 — dedicated lastTradePriceByContract eliminates quote contamination
 import { ProjectXClient } from '../../services/projectx-client';
 import { MNQDeltaTrendCalculator } from './calculator';
 import { StrategyConfig } from './types';
@@ -20,7 +24,6 @@ export class MNQDeltaTrendTrader {
   private lastTradePriceByContract = new Map<string, number>(); // trade-only ref — quotes cannot touch this
   private signedVolInBarByContract = new Map<string, number>();
   private volInBarByContract = new Map<string, number>();
-  private prevClosedBarClose: number | null = null;
 
   // Open 3m bar state
   private barOpenPx: number | null = null;
@@ -127,9 +130,6 @@ export class MNQDeltaTrendTrader {
     this.lastTradePriceByContract.clear();
     this.signedVolInBarByContract.clear();
     this.volInBarByContract.clear();
-
-    // Reset Pine-style delta tracking
-    this.prevClosedBarClose = null;
 
     // Null all bar tracking vars
     this.barOpenPx = null;
@@ -241,17 +241,6 @@ export class MNQDeltaTrendTrader {
       this.liveBarLow = Math.min(this.liveBarLow!, px);
     }
 
-    // === Price tracking only — volume/delta now handled by onTrade() ===
-
-    // Pine-style delta: recalculate bar delta vs previous closed bar
-    const barVol = this.volInBarByContract.get(contractId) ?? 0;
-    let barDelta = 0;
-    if (this.prevClosedBarClose !== null) {
-      if (px > this.prevClosedBarClose) barDelta = barVol;
-      else if (px < this.prevClosedBarClose) barDelta = -barVol;
-    }
-    this.signedVolInBarByContract.set(contractId, barDelta);
-
     // Update price ref (used by onTrade for tick direction, and by bar close)
     this.lastPriceByContract.set(contractId, px);
 
@@ -312,16 +301,21 @@ export class MNQDeltaTrendTrader {
       (this.volInBarByContract.get(contractId) ?? 0) + vol
     );
 
-    // Tick direction delta matching Python main.py parity
-    // >= last trade price = uptick (+vol), < last trade price = downtick (-vol)
+    // Tick direction delta — strict >/< with zero on equal (Nov 13 behavior)
     // Uses dedicated lastTradePriceByContract — onQuote cannot contaminate
     const lastTradePx = this.lastTradePriceByContract.get(contractId);
     let signed = 0;
     if (lastTradePx !== undefined) {
-      if (px >= lastTradePx) signed = vol;
-      else signed = -vol;
+      if (px > lastTradePx) signed = vol;
+      else if (px < lastTradePx) signed = -vol;
     }
     this.lastTradePriceByContract.set(contractId, px);
+
+    // Accumulate into bar delta — same path as closed bar reads
+    this.signedVolInBarByContract.set(
+      contractId,
+      (this.signedVolInBarByContract.get(contractId) ?? 0) + signed
+    );
 
     this.calculator.pushIntraBarDelta(signed, nowMs);
   }
@@ -364,7 +358,7 @@ export class MNQDeltaTrendTrader {
       low: this.liveBarLow!,
       close: currentPrice,
       volume: this.volInBarByContract.get(this.contractId) ?? 0,
-      delta: this.calculator.getIntraBarDeltaHistory().reduce((sum, e) => sum + e.delta, 0),
+      delta: this.signedVolInBarByContract.get(this.contractId) ?? 0,
     };
 
     const accumulationMs = this.liveBarStartMs ? (nowMs - this.liveBarStartMs) : 0;
@@ -403,9 +397,6 @@ export class MNQDeltaTrendTrader {
       volume: volume,
       delta: signed,
     };
-
-    // Store for Pine-style delta calculation in next bar
-    this.prevClosedBarClose = closePx!;
 
     // Reset accumulators for next bar
     this.volInBarByContract.set(this.contractId, 0);
