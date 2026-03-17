@@ -5,8 +5,8 @@ export const MNQ_DELTA_TREND_CONFIG: StrategyConfig = {
   symbol: 'MNQ',
 
   // === TIME FILTER ===
-  tradingStartTime: '09:30',
-  tradingEndTime:   '16:00',
+  tradingStartTime: '09:45',
+  tradingEndTime:   '12:30',
 
   // === DELTA CONFIGURATION (force easy entry) ===
   deltaSMALength: 20,           
@@ -24,13 +24,13 @@ export const MNQ_DELTA_TREND_CONFIG: StrategyConfig = {
 
   // === ATR & EXIT CONFIGURATION ===
   atrProfitMultiplier: 1.0,    
-  atrStopLossMultiplier: 0.75,  
+  atrStopLossMultiplier: 0.50,  
   minAtrToTrade: 9,        
   minBarsBeforeExit: 0,
 
   // NEW (v0.5)
-  atrCap: 16,             // points, cap ATR at entry
-  useAtrCap:false,
+  atrCap: 12,             // points, cap ATR at entry
+  useAtrCap: true,
   tickExitGraceMs: 0,  // time-based grace before trailing
 
   // === TRAILING STOP CONFIGURATION ===
@@ -40,7 +40,7 @@ export const MNQ_DELTA_TREND_CONFIG: StrategyConfig = {
   
   // ... existing configs ...
   fadeLookback: 3,
-  deltaFadeRatio: 0.80,
+  deltaFadeRatio: 0.7,
 
   // === POSITION SIZING ===
   contractQuantity: 1,
@@ -56,9 +56,9 @@ export const MNQ_DELTA_TREND_CONFIG: StrategyConfig = {
   // Intra-bar detection settings
   useIntraBarDetection: true,              // Enable intra-bar signals
   intraBarCheckIntervalMs: 100,            // Check every 100ms
-  intraBarMinAccumulationMs: 2500,         // Wait 2.5 seconds before first check
-  intraBarConfirmationChecks: 3,           // Require 3 consecutive confirmations
-  intraBarConfirmationWindowMs: 300,       // Within 300ms window
+  intraBarMinAccumulationMs: 500,         // Wait 2.5 seconds before first check
+  intraBarConfirmationChecks: 2,           // Require 3 consecutive confirmations
+  intraBarConfirmationWindowMs: 400,       // Within 300ms window
 
   sendWebhook: false,
   webhookUrl: '' //'http://192.168.4.170:8080/signal?secret=toast',

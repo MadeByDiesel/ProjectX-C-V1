@@ -1,4 +1,5 @@
 // reverted to Nov3 code with added withTokenRefresh() method
+// Mar12: Register tokenRefreshFn on SignalRService so staleness reconnect gets a fresh JWT
 import { ApiService } from './api.service';
 import { SignalRService } from './signalr-service';
 import { 
@@ -381,6 +382,15 @@ export class ProjectXClient {
     if (!authToken || !this.selectedAccountId) {
       throw new Error('Not authenticated or account not selected');
     }
+
+    // Register token refresh so staleness reconnect gets a fresh JWT
+    this.signalRService.setTokenRefreshFn(async () => {
+      const authResponse = await this.apiService.authenticate({
+        userName: this.config.userName,
+        apiKey: this.config.apiKey
+      });
+      return authResponse.token;
+    });
 
     await this.signalRService.initialize(authToken, this.selectedAccountId);
   }

@@ -1,10 +1,24 @@
-// src/strategies/mnq-delta-trend/trader.ts - Dec 26 Claude 
-// Mar10 fix — restore Nov 13 single-path delta architecture
-//   1. Removed prevClosedBarClose Pine-style recalculation from onQuote
-//   2. onTrade: reverted >= to strict >/< with zero on equal (bidirectional)
-//   3. onTrade: accumulates into signedVolInBarByContract (one path for both forming + closed bar)
-//   4. checkIntraBarSignal: forming bar reads signedVolInBarByContract (same source as closed bar)
-// Mar03 — dedicated lastTradePriceByContract eliminates quote contamination
+// =============================================================================
+// trader-nt8-parity.ts
+// =============================================================================
+// DELTA METHODOLOGY: NT8 Parity
+// 
+// Reference: PREVIOUS BAR CLOSE (not previous tick/trade)
+// - On each GatewayTrade: signed = price > prevBarClose ? size : price < prevBarClose ? -size : 0
+// - Magnitude: Volume-weighted, thousands (matches NT8 output)
+// - Direction: Bidirectional (strict >/<, zero on equal)
+//
+// This matches NinjaTrader's MNQDeltaTrend.cs exactly:
+//   if (tickPrice > prevTickPrice) formingDelta += tickVol;
+//   else if (tickPrice < prevTickPrice) formingDelta -= tickVol;
+// Where prevTickPrice = Close[1] = previous bar's close
+//
+// WHY THIS WORKS:
+// - Reference updates once per bar (stable), not every tick
+// - Price has room to move away from reference, creating directional volume
+// - Spike threshold (450) calibrated for this magnitude scale
+// =============================================================================
+
 import { ProjectXClient } from '../../services/projectx-client';
 import { MNQDeltaTrendCalculator } from './calculator';
 import { StrategyConfig } from './types';
@@ -21,9 +35,11 @@ export class MNQDeltaTrendTrader {
 
   // Tick → bar accumulators
   private lastPriceByContract = new Map<string, number>();
-  private lastTradePriceByContract = new Map<string, number>(); // trade-only ref — quotes cannot touch this
   private signedVolInBarByContract = new Map<string, number>();
   private volInBarByContract = new Map<string, number>();
+
+  // NT8 PARITY: Previous bar close as delta reference
+  private prevBarClose: number | null = null;
 
   // Open 3m bar state
   private barOpenPx: number | null = null;
@@ -127,9 +143,11 @@ export class MNQDeltaTrendTrader {
   private resetTraderState(): void {
     // Clear all Maps
     this.lastPriceByContract.clear();
-    this.lastTradePriceByContract.clear();
     this.signedVolInBarByContract.clear();
     this.volInBarByContract.clear();
+
+    // NT8 PARITY: Reset prev bar close reference
+    this.prevBarClose = null;
 
     // Null all bar tracking vars
     this.barOpenPx = null;
@@ -177,7 +195,7 @@ export class MNQDeltaTrendTrader {
       this.maybeCloseBarByClock();
     }, 1000);
 
-    console.info(`[MNQDeltaTrend][Trader] started - full state reset performed`);
+    console.info(`[MNQDeltaTrend][Trader] started - NT8 PARITY delta (prevBarClose reference)`);
   }
 
   public async stop(): Promise<void> {
@@ -241,7 +259,7 @@ export class MNQDeltaTrendTrader {
       this.liveBarLow = Math.min(this.liveBarLow!, px);
     }
 
-    // Update price ref (used by onTrade for tick direction, and by bar close)
+    // Update price ref (used by bar close)
     this.lastPriceByContract.set(contractId, px);
 
     // === Tick-level protective exits (hard stop / trail) ===
@@ -282,7 +300,13 @@ export class MNQDeltaTrendTrader {
 
   /**
    * Handle GatewayTrade events — per-trade volume and delta accumulation.
-   * Each call is a single trade with: price, volume (per-trade size), type (0=Buy, 1=Sell)
+   * 
+   * NT8 PARITY: Delta direction uses PREVIOUS BAR CLOSE as reference.
+   * - If price > prevBarClose → positive delta (buying above prior close)
+   * - If price < prevBarClose → negative delta (selling below prior close)
+   * - If price == prevBarClose → zero (neutral)
+   * 
+   * This matches NT8's MNQDeltaTrend.cs forming bar logic exactly.
    */
   private onTrade(t: any): void {
     if (!this.running) return;
@@ -301,15 +325,15 @@ export class MNQDeltaTrendTrader {
       (this.volInBarByContract.get(contractId) ?? 0) + vol
     );
 
-    // Tick direction delta — strict >/< with zero on equal (Nov 13 behavior)
-    // Uses dedicated lastTradePriceByContract — onQuote cannot contaminate
-    const lastTradePx = this.lastTradePriceByContract.get(contractId);
+    // NT8 PARITY: Delta direction relative to PREVIOUS BAR CLOSE
+    // Not previous trade — this is the key difference from the broken Mar 10 code
     let signed = 0;
-    if (lastTradePx !== undefined) {
-      if (px > lastTradePx) signed = vol;
-      else if (px < lastTradePx) signed = -vol;
+    if (this.prevBarClose !== null) {
+      if (px > this.prevBarClose) signed = vol;
+      else if (px < this.prevBarClose) signed = -vol;
+      // Equal to prevBarClose = zero (neutral)
     }
-    this.lastTradePriceByContract.set(contractId, px);
+    // If prevBarClose is null (first bar), delta stays 0 until we have a reference
 
     // Accumulate into bar delta — same path as closed bar reads
     this.signedVolInBarByContract.set(
@@ -318,6 +342,32 @@ export class MNQDeltaTrendTrader {
     );
 
     this.calculator.pushIntraBarDelta(signed, nowMs);
+
+    // Protective stop/trail check on EVERY trade print — same tick resolution as Bot A
+    if (this.calculator.hasPosition() && !this.isFlattening) {
+      if (this.reconciling) return;
+      const hit = this.calculator.onTickForProtectiveStops(px, this.marketState.atr ?? 0);
+      if (hit === 'hitStop' || hit === 'hitTrail') {
+        const dir = this.calculator.getPositionDirection();
+        console.info(`[MNQDeltaTrend][EXIT] ${hit} (trade) px=${px} dir=${dir}`);
+        this.reconciling = true;
+        this.isFlattening = true;
+        this.client.closePosition(this.contractId)
+          .then(() => {
+            console.info('[MNQDeltaTrend][EXIT] flattened');
+            this.calculator.clearPosition();
+            this.calculator.clearCooldowns();
+            this.isFlattening = false;
+            this.reconciling = false;
+            if (this.config.sendWebhook) void this.postWebhook('FLAT');
+          })
+          .catch(err => {
+            console.error('[MNQDeltaTrend][EXIT] flatten failed:', err);
+            this.isFlattening = false;
+            this.reconciling = false;
+          });
+      }
+    }
   }
 
   private maybeCloseBarByClock(): void {
@@ -398,6 +448,9 @@ export class MNQDeltaTrendTrader {
       delta: signed,
     };
 
+    // NT8 PARITY: Save this bar's close as reference for next bar's delta
+    this.prevBarClose = closePx!;
+
     // Reset accumulators for next bar
     this.volInBarByContract.set(this.contractId, 0);
     this.signedVolInBarByContract.set(this.contractId, 0);
@@ -448,11 +501,6 @@ export class MNQDeltaTrendTrader {
     this.enteredBarStartMs = barId;
 
     const direction = signal.signal === 'buy' ? 'long' : 'short';
-    // const atrSnapshot = Math.min(atrNow, this.config.atrCap ?? 16);
-
-    // const atrSnapshot = this.config.useAtrCap
-    //   ? Math.min(atrNow, this.config.atrCap ?? 16)
-    //   : atrNow;
     const atrSnapshot = atrNow;  // Pass live ATR - calculator handles decoupling
 
     this.isEnteringPosition = true;
