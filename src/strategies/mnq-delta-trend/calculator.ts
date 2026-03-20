@@ -1,6 +1,11 @@
 // calculator.ts — Dec26 Claude - Fixed code with session reset, breakout tolerance, EMA tolerance
 // Mar12: Added minAbsDeltaSMA floor — blocks entries when 20-bar SMA has no directional bias (chop regime).
 //   Applies to both bar-close and intra-bar signal paths.
+// Mar20: Added prevBar direction agreement filter (usePrevBarDirectionFilter).
+//   Blocks signals where current bar delta disagrees in sign with previous closed bar delta.
+//   Fixes Hole 2 in peak fade filter: direction flips passing on magnitude alone.
+// Mar20: Fixed intra-bar fade check to include prevBar delta in peakAbs.
+//   Fixes Hole 1: intra-bar was blind to prevBar deceleration (only saw forming bar history).
 import { BarData, MarketState, StrategyConfig, TradeSignal } from './types';
 import { TechnicalCalculator } from '../../utils/technical';
 
@@ -336,8 +341,10 @@ public resetState(): void {
     }
 
     // Fade check for bar-close path
+    const prevDelta = this.bars3min.length >= 2
+      ? (this.bars3min[this.bars3min.length - 2].delta ?? 0)
+      : 0;
     if (this.bars3min.length >= 2) {
-      const prevDelta = this.bars3min[this.bars3min.length - 2].delta ?? 0;
       const peakAbs = Math.max(Math.abs(prevDelta), Math.abs(delta));
       const currAbs = Math.abs(delta);
       const fadeOk = peakAbs === 0 || currAbs >= peakAbs * (this.config.deltaFadeRatio ?? 0.7);
@@ -354,6 +361,18 @@ public resetState(): void {
 
     const passDeltaLong = delta > spike && delta > longThreshold;
     const passDeltaShort = delta < -spike && delta < shortThreshold;
+
+    // Hole 2 fix: prevBar delta must agree in direction with signal
+    if ((this.config as any).usePrevBarDirectionFilter !== false && this.bars3min.length >= 2 && prevDelta !== 0) {
+      if (passDeltaLong && prevDelta < 0) {
+        console.debug(`[signal][bar] BLOCKED: prevBarΔ=${prevDelta} disagrees with long Δ=${delta}`);
+        return { signal: 'hold', reason: `PrevBar Δ=${prevDelta} disagrees with long`, confidence: 0 };
+      }
+      if (passDeltaShort && prevDelta > 0) {
+        console.debug(`[signal][bar] BLOCKED: prevBarΔ=${prevDelta} disagrees with short Δ=${delta}`);
+        return { signal: 'hold', reason: `PrevBar Δ=${prevDelta} disagrees with short`, confidence: 0 };
+      }
+    }
 
     const htf = marketState.higherTimeframeTrend;
     const htfMarginThresh = Number((this.config as any).htfMarginThreshold ?? 0);
@@ -464,17 +483,36 @@ public resetState(): void {
     const longThreshold = Math.abs(deltaSMA) * surgeMult;
     const shortThreshold = -Math.abs(deltaSMA) * surgeMult;
 
-    // Restored fade check for intra-bar - includes current delta in peakAbs
-    const peakAbs = Math.max(...this.intraBarDeltaHistory.map(e => Math.abs(e.delta)), Math.abs(delta), 0);
+    // Hole 1 fix: include prevBar (last closed bar) delta in fade check so intra-bar
+    // can detect deceleration from prior bar, not just within forming bar
+    const prevBarDeltaAbs = this.bars3min.length >= 1
+      ? Math.abs(this.bars3min[this.bars3min.length - 1].delta ?? 0)
+      : 0;
+    const peakAbs = Math.max(...this.intraBarDeltaHistory.map(e => Math.abs(e.delta)), Math.abs(delta), prevBarDeltaAbs, 0);
     const currAbs = Math.abs(delta);
     const fadeOk = peakAbs === 0 || currAbs >= peakAbs * (this.config.deltaFadeRatio ?? 0.7);
 
     if (!fadeOk) {
-      return { signal: 'hold', reason: `Intra fade: ${currAbs} < 70% of peak ${peakAbs}`, confidence: 0 };
+      return { signal: 'hold', reason: `Intra fade: ${currAbs} < 70% of peak ${peakAbs} (prevBar=${prevBarDeltaAbs})`, confidence: 0 };
     }
 
     const passDeltaLong = delta > spike && delta > longThreshold && fadeOk;
     const passDeltaShort = delta < -spike && delta < shortThreshold && fadeOk;
+
+    // Hole 2 fix: prevBar (last closed bar) delta must agree in direction with signal
+    const prevClosedBarDelta = this.bars3min.length >= 1
+      ? (this.bars3min[this.bars3min.length - 1].delta ?? 0)
+      : 0;
+    if ((this.config as any).usePrevBarDirectionFilter !== false && this.bars3min.length >= 1 && prevClosedBarDelta !== 0) {
+      if (passDeltaLong && prevClosedBarDelta < 0) {
+        console.debug(`[signal][intra] BLOCKED: prevBarΔ=${prevClosedBarDelta} disagrees with long Δ=${delta}`);
+        return { signal: 'hold', reason: `[INTRA] PrevBar Δ=${prevClosedBarDelta} disagrees with long`, confidence: 0 };
+      }
+      if (passDeltaShort && prevClosedBarDelta > 0) {
+        console.debug(`[signal][intra] BLOCKED: prevBarΔ=${prevClosedBarDelta} disagrees with short Δ=${delta}`);
+        return { signal: 'hold', reason: `[INTRA] PrevBar Δ=${prevClosedBarDelta} disagrees with short`, confidence: 0 };
+      }
+    }
 
     const htf = marketState.higherTimeframeTrend;
     const htfMarginThresh = Number((this.config as any).htfMarginThreshold ?? 0);

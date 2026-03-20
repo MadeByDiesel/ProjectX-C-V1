@@ -66,6 +66,7 @@ export interface StrategyConfig {
   intraBarConfirmationWindowMs?: number;    // Time window for confirmations (default: 500ms)
 
   htfMarginThreshold?: number;
+  usePrevBarDirectionFilter?: boolean
 }
 
 // === Bar / Market / Signal types used by calculator & trader ===
