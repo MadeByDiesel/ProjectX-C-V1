@@ -29,7 +29,7 @@ export const MNQ_DELTA_TREND_CONFIG: StrategyConfig = {
   minBarsBeforeExit: 0,
 
   // NEW (v0.5)
-  atrCap: 12,             // points, cap ATR at entry
+  atrCap: 16,             // points, cap ATR at entry
   useAtrCap: true,
   tickExitGraceMs: 0,  // time-based grace before trailing
 
@@ -56,9 +56,11 @@ export const MNQ_DELTA_TREND_CONFIG: StrategyConfig = {
   // Intra-bar detection settings
   useIntraBarDetection: true,              // Enable intra-bar signals
   intraBarCheckIntervalMs: 100,            // Check every 100ms
-  intraBarMinAccumulationMs: 500,         // Wait 2.5 seconds before first check
-  intraBarConfirmationChecks: 2,           // Require 3 consecutive confirmations
-  intraBarConfirmationWindowMs: 400,       // Within 300ms window
+  intraBarMinAccumulationMs: 1000,         // Wait 2.5 seconds before first check
+  intraBarConfirmationChecks: 3,           // Require 3 consecutive confirmations
+  intraBarConfirmationWindowMs: 300,       // Within 300ms window
+
+  htfMarginThreshold: 15,
 
   sendWebhook: false,
   webhookUrl: '' //'http://192.168.4.170:8080/signal?secret=toast',

@@ -1,4 +1,6 @@
 // calculator.ts — Dec26 Claude - Fixed code with session reset, breakout tolerance, EMA tolerance
+// Mar12: Added minAbsDeltaSMA floor — blocks entries when 20-bar SMA has no directional bias (chop regime).
+//   Applies to both bar-close and intra-bar signal paths.
 import { BarData, MarketState, StrategyConfig, TradeSignal } from './types';
 import { TechnicalCalculator } from '../../utils/technical';
 
@@ -30,6 +32,9 @@ private currentPosition: {
   // Track HTF bucket
   public lastHTFBucketStartMs: number | null = null;
 
+  // HTF margin: distance between price and HTF EMA (absolute pts)
+  private htfMargin: number = 0;
+
   // Intra-bar signal tracking
   private intraBarDeltaHistory: Array<{ delta: number; timestamp: number }> = [];
   private lastIntraBarSignalTime = 0;
@@ -59,6 +64,7 @@ private currentPosition: {
 public resetState(): void {
     // Preserve warmup data (bars3min, bars15min, isWarmUpProcessed) - loaded by strategy.ts
     this.lastHTFBucketStartMs = null;
+    this.htfMargin = 0;
     this.intraBarDeltaHistory = [];
     this.lastIntraBarSignalTime = 0;
     this.lastEntryBarTimestamp = null;
@@ -225,16 +231,17 @@ public resetState(): void {
   }
 
   private determineTrend(): 'bullish' | 'bearish' | 'neutral' {
-    if (this.bars15min.length < 2) return 'neutral';
+    if (this.bars15min.length < 2) { this.htfMargin = 0; return 'neutral'; }
     const L = Math.max(1, this.config.htfEMALength ?? 9);
     const useForming = this.config.htfUseForming === true;
     const lastIdx = useForming ? this.bars15min.length - 1 : this.bars15min.length - 2;
-    if (lastIdx < 0) return 'neutral';
+    if (lastIdx < 0) { this.htfMargin = 0; return 'neutral'; }
     const closes = this.bars15min.slice(0, lastIdx + 1).map(b => b.close);
-    if (closes.length < L) return 'neutral';
+    if (closes.length < L) { this.htfMargin = 0; return 'neutral'; }
     const emaSeries = this.technical.calculateEMA(closes, L);
     const px = closes[closes.length - 1];
     const ema = emaSeries[emaSeries.length - 1];
+    this.htfMargin = px - ema;
     return px > ema ? 'bullish' : px < ema ? 'bearish' : 'neutral';
   }
 
@@ -302,7 +309,7 @@ public resetState(): void {
     gates: { brokeUpCloseTol: boolean; brokeDownCloseTol: boolean; passLong: boolean; passShort: boolean }
   ): TradeSignal {
     const { brokeUpCloseTol, brokeDownCloseTol, passLong, passShort } = gates;
-    console.debug(`[signal][bar] Δ=${bar.delta} HTF=${marketState.higherTimeframeTrend} breakUp=${brokeUpCloseTol} breakDn=${brokeDownCloseTol} emaL=${passLong} emaS=${passShort} ATR=${marketState.atr?.toFixed(2)}`);
+    console.debug(`[signal][bar] Δ=${bar.delta} HTF=${marketState.higherTimeframeTrend} htfM=${this.htfMargin.toFixed(1)} breakUp=${brokeUpCloseTol} breakDn=${brokeDownCloseTol} emaL=${passLong} emaS=${passShort} ATR=${marketState.atr?.toFixed(2)} |SMA|=${Math.abs(this.smaSignedDelta(this.config.deltaSMALength ?? 20, this.bars3min.length - 1) || 0).toFixed(0)}`);
     
     if (this.lastEntryBarTimestamp === bar.timestamp) {
       return { signal: 'hold', reason: 'Same bar re-entry blocked', confidence: 0 };
@@ -320,6 +327,12 @@ public resetState(): void {
     const deltaSMA = this.smaSignedDelta(len, this.bars3min.length - 1);
     if (!Number.isFinite(deltaSMA)) {
       return { signal: 'hold', reason: 'Delta SMA not ready', confidence: 0 };
+    }
+
+    // SMA floor: block entries when market has no directional persistence (chop regime)
+    const minAbsSMA = (this.config as any).minAbsDeltaSMA ?? 0;
+    if (minAbsSMA > 0 && Math.abs(deltaSMA) < minAbsSMA) {
+      return { signal: 'hold', reason: `SMA floor: |${deltaSMA.toFixed(0)}| < ${minAbsSMA}`, confidence: 0 };
     }
 
     // Fade check for bar-close path
@@ -343,6 +356,10 @@ public resetState(): void {
     const passDeltaShort = delta < -spike && delta < shortThreshold;
 
     const htf = marketState.higherTimeframeTrend;
+    const htfMarginThresh = Number((this.config as any).htfMarginThreshold ?? 0);
+    if (htfMarginThresh > 0 && Math.abs(this.htfMargin) < htfMarginThresh) {
+      return { signal: 'hold', reason: `HTF margin ${Math.abs(this.htfMargin).toFixed(1)} < ${htfMarginThresh}`, confidence: 0 };
+    }
 
     if (passDeltaLong && htf === 'bullish' && brokeUpCloseTol) {
       if (this.config.useEmaFilter && !passLong) {
@@ -422,7 +439,7 @@ public resetState(): void {
     gates: { brokeUpCloseTol: boolean; brokeDownCloseTol: boolean; passLong: boolean; passShort: boolean }
   ): TradeSignal {
     const { brokeUpCloseTol, brokeDownCloseTol, passLong, passShort } = gates;
-    console.debug(`[signal][intra] Δ=${formingBar.delta} HTF=${marketState.higherTimeframeTrend} breakUp=${brokeUpCloseTol} breakDn=${brokeDownCloseTol} emaL=${passLong} emaS=${passShort} ATR=${marketState.atr?.toFixed(2)}`);
+    console.debug(`[signal][intra] Δ=${formingBar.delta} HTF=${marketState.higherTimeframeTrend} htfM=${this.htfMargin.toFixed(1)} breakUp=${brokeUpCloseTol} breakDn=${brokeDownCloseTol} emaL=${passLong} emaS=${passShort} ATR=${marketState.atr?.toFixed(2)} |SMA|=${Math.abs(this.smaSignedDelta(this.config.deltaSMALength ?? 20, this.bars3min.length - 1) || 0).toFixed(0)}`);
     const atr = marketState.atr;
     const atrThreshold = this.config.minAtrToTrade ?? 0;
     if (!(Number.isFinite(atr) && atr > atrThreshold)) {
@@ -435,6 +452,12 @@ public resetState(): void {
     const deltaSMA = this.smaSignedDelta(len, this.bars3min.length - 1);
     if (!Number.isFinite(deltaSMA)) {
       return { signal: 'hold', reason: 'Delta SMA not ready', confidence: 0 };
+    }
+
+    // SMA floor: block entries when market has no directional persistence (chop regime)
+    const minAbsSMA = (this.config as any).minAbsDeltaSMA ?? 0;
+    if (minAbsSMA > 0 && Math.abs(deltaSMA) < minAbsSMA) {
+      return { signal: 'hold', reason: `SMA floor: |${deltaSMA.toFixed(0)}| < ${minAbsSMA}`, confidence: 0 };
     }
 
     const surgeMult = this.config.deltaSurgeMultiplier ?? 1.8;
@@ -454,6 +477,10 @@ public resetState(): void {
     const passDeltaShort = delta < -spike && delta < shortThreshold && fadeOk;
 
     const htf = marketState.higherTimeframeTrend;
+    const htfMarginThresh = Number((this.config as any).htfMarginThreshold ?? 0);
+    if (htfMarginThresh > 0 && Math.abs(this.htfMargin) < htfMarginThresh) {
+      return { signal: 'hold', reason: `HTF margin ${Math.abs(this.htfMargin).toFixed(1)} < ${htfMarginThresh}`, confidence: 0 };
+    }
 
     if (passDeltaLong && htf === 'bullish' && brokeUpCloseTol) {
       if (this.config.useEmaFilter && !passLong) return { signal: 'hold', reason: 'EMA filter', confidence: 0 };
