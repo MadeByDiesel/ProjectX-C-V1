@@ -6,6 +6,9 @@
 //   Fixes Hole 2 in peak fade filter: direction flips passing on magnitude alone.
 // Mar20: Fixed intra-bar fade check to include prevBar delta in peakAbs.
 //   Fixes Hole 1: intra-bar was blind to prevBar deceleration (only saw forming bar history).
+// Mar27: Cooldown now reads from config (intraBarCooldownMs) instead of hardcoded 2000ms.
+// Mar27: Added MAE/MFE logging — tracks max adverse and max favorable excursion per trade.
+//   Logs on every exit (hitStop/hitTrail) for data-driven stop/trail optimization.
 import { BarData, MarketState, StrategyConfig, TradeSignal } from './types';
 import { TechnicalCalculator } from '../../utils/technical';
 
@@ -33,6 +36,10 @@ private currentPosition: {
   private trailingStopLevel = 0;
   private trailArmed = false;
   private noTrailBeforeMs = 0;
+
+  // MAE/MFE tracking (Mar27): max adverse/favorable excursion per trade
+  private maePoints = 0;  // max points adverse from entry
+  private mfePoints = 0;  // max points favorable from entry
 
   // Track HTF bucket
   public lastHTFBucketStartMs: number | null = null;
@@ -76,6 +83,8 @@ public resetState(): void {
     this.currentPosition = null;
     this.trailingStopLevel = 0;
     this.trailArmed = false;
+    this.maePoints = 0;
+    this.mfePoints = 0;
     this.atrAtSignal = 0;
   }
 
@@ -425,7 +434,8 @@ public resetState(): void {
       return { signal: 'hold', reason: `Need ${required} confirms`, confidence: 0 };
     }
 
-    if (nowMs - this.lastIntraBarSignalTime < 2000) {
+    const cooldownMs = Number((this.config as any).intraBarCooldownMs ?? 2000);
+    if (nowMs - this.lastIntraBarSignalTime < cooldownMs) {
       return { signal: 'hold', reason: 'Cooldown', confidence: 0 };
     }
 
@@ -545,6 +555,8 @@ public resetState(): void {
     this.currentPosition = null;
     this.trailingStopLevel = 0;
     this.trailArmed = false;
+    this.maePoints = 0;
+    this.mfePoints = 0;
   }
 
   public hasPosition(): boolean {
@@ -576,6 +588,8 @@ public resetState(): void {
     this.currentPosition = { entryPrice, entryTime: Date.now(), direction, stopLoss, atrSeedForStop, atrSeedForTrail };
     this.trailingStopLevel = stopLoss;
     this.trailArmed = false;
+    this.maePoints = 0;
+    this.mfePoints = 0;
     this.noTrailBeforeMs = Date.now() + (this.config.tickExitGraceMs ?? 0);
   }
 
@@ -587,8 +601,19 @@ public resetState(): void {
     if (!this.currentPosition || !Number.isFinite(lastPrice)) return 'none';
     const { direction: dir, entryPrice, stopLoss, atrSeedForTrail } = this.currentPosition;
 
-    if (dir === 'long' && lastPrice <= stopLoss) return 'hitStop';
-    if (dir === 'short' && lastPrice >= stopLoss) return 'hitStop';
+    // Track MAE/MFE on every tick
+    const favorable = dir === 'long' ? lastPrice - entryPrice : entryPrice - lastPrice;
+    if (favorable > this.mfePoints) this.mfePoints = favorable;
+    if (favorable < 0 && Math.abs(favorable) > this.maePoints) this.maePoints = Math.abs(favorable);
+
+    if (dir === 'long' && lastPrice <= stopLoss) {
+      this.logMAEMFE('hitStop', lastPrice);
+      return 'hitStop';
+    }
+    if (dir === 'short' && lastPrice >= stopLoss) {
+      this.logMAEMFE('hitStop', lastPrice);
+      return 'hitStop';
+    }
 
     if (Date.now() < this.noTrailBeforeMs) return 'none';
     if (!Number.isFinite(atrSeedForTrail) || atrSeedForTrail <= 0) return 'none';
@@ -604,7 +629,7 @@ public resetState(): void {
       if (this.trailArmed) {
         const candidate = Math.max(stopLoss, lastPrice - off);
         if (candidate > this.trailingStopLevel) this.trailingStopLevel = candidate;
-        if (lastPrice <= this.trailingStopLevel) return 'hitTrail';
+        if (lastPrice <= this.trailingStopLevel) { this.logMAEMFE('hitTrail', lastPrice); return 'hitTrail'; }
       }
     } else {
       if (!this.trailArmed && (entryPrice - lastPrice) >= act) {
@@ -614,10 +639,18 @@ public resetState(): void {
       if (this.trailArmed) {
         const candidate = Math.min(stopLoss, lastPrice + off);
         if (candidate < this.trailingStopLevel) this.trailingStopLevel = candidate;
-        if (lastPrice >= this.trailingStopLevel) return 'hitTrail';
+        if (lastPrice >= this.trailingStopLevel) { this.logMAEMFE('hitTrail', lastPrice); return 'hitTrail'; }
       }
     }
     return 'none';
+  }
+
+  private logMAEMFE(exitType: string, exitPrice: number): void {
+    if (!this.currentPosition) return;
+    const { direction, entryPrice, atrSeedForStop, atrSeedForTrail } = this.currentPosition;
+    const holdMs = Date.now() - this.currentPosition.entryTime;
+    const exitPts = direction === 'long' ? exitPrice - entryPrice : entryPrice - exitPrice;
+    console.info(`[MAE/MFE] ${exitType} dir=${direction} entry=${entryPrice.toFixed(2)} exit=${exitPrice.toFixed(2)} pts=${exitPts.toFixed(2)} MAE=${this.maePoints.toFixed(2)} MFE=${this.mfePoints.toFixed(2)} hold=${holdMs}ms atrStop=${atrSeedForStop.toFixed(2)} atrTrail=${atrSeedForTrail.toFixed(2)} trailArmed=${this.trailArmed}`);
   }
 
   public calculatePositionSize(currentPrice: number, atr: number, accountBalance: number): number {

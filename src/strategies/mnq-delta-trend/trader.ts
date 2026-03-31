@@ -1,11 +1,11 @@
 // =============================================================================
-// trader-nt8-parity.ts
+// trader-.ts
 // =============================================================================
-// DELTA METHODOLOGY: NT8 Parity
+// DELTA METHODOLOGY: 
 // 
 // Reference: PREVIOUS BAR CLOSE (not previous tick/trade)
 // - On each GatewayTrade: signed = price > prevBarClose ? size : price < prevBarClose ? -size : 0
-// - Magnitude: Volume-weighted, thousands (matches NT8 output)
+// - Magnitude: Volume-weighted, thousands (matches  output)
 // - Direction: Bidirectional (strict >/<, zero on equal)
 //
 // This matches NinjaTrader's MNQDeltaTrend.cs exactly:
@@ -38,7 +38,7 @@ export class MNQDeltaTrendTrader {
   private signedVolInBarByContract = new Map<string, number>();
   private volInBarByContract = new Map<string, number>();
 
-  // NT8 PARITY: Previous bar close as delta reference
+  // : Previous bar close as delta reference
   private prevBarClose: number | null = null;
 
   // Open 3m bar state
@@ -76,7 +76,7 @@ export class MNQDeltaTrendTrader {
   private marketDataHandler = (q: GatewayQuote & { contractId: string }) => this.onQuote(q);
   private marketTradeHandler = (t: any) => this.onTrade(t);
 
-  /** Post trade events to local NT8 webhook listener (optional) */
+  /** Post trade events to local  webhook listener (optional) */
   private async postWebhook(action: 'BUY' | 'SELL' | 'FLAT', qty?: number): Promise<void> {
     if (!this.config?.sendWebhook) return;
     const base = this.config.webhookUrl || '';
@@ -146,7 +146,7 @@ export class MNQDeltaTrendTrader {
     this.signedVolInBarByContract.clear();
     this.volInBarByContract.clear();
 
-    // NT8 PARITY: Reset prev bar close reference
+    // : Reset prev bar close reference
     this.prevBarClose = null;
 
     // Null all bar tracking vars
@@ -195,7 +195,7 @@ export class MNQDeltaTrendTrader {
       this.maybeCloseBarByClock();
     }, 1000);
 
-    console.info(`[MNQDeltaTrend][Trader] started - NT8 PARITY delta (prevBarClose reference)`);
+    console.info(`[MNQDeltaTrend][Trader] started -  delta (prevBarClose reference)`);
   }
 
   public async stop(): Promise<void> {
@@ -301,12 +301,12 @@ export class MNQDeltaTrendTrader {
   /**
    * Handle GatewayTrade events — per-trade volume and delta accumulation.
    * 
-   * NT8 PARITY: Delta direction uses PREVIOUS BAR CLOSE as reference.
+   * : Delta direction uses PREVIOUS BAR CLOSE as reference.
    * - If price > prevBarClose → positive delta (buying above prior close)
    * - If price < prevBarClose → negative delta (selling below prior close)
    * - If price == prevBarClose → zero (neutral)
    * 
-   * This matches NT8's MNQDeltaTrend.cs forming bar logic exactly.
+   * This matches 's MNQDeltaTrend.cs forming bar logic exactly.
    */
   private onTrade(t: any): void {
     if (!this.running) return;
@@ -325,7 +325,7 @@ export class MNQDeltaTrendTrader {
       (this.volInBarByContract.get(contractId) ?? 0) + vol
     );
 
-    // NT8 PARITY: Delta direction relative to PREVIOUS BAR CLOSE
+    // : Delta direction relative to PREVIOUS BAR CLOSE
     // Not previous trade — this is the key difference from the broken Mar 10 code
     let signed = 0;
     if (this.prevBarClose !== null) {
@@ -448,7 +448,7 @@ export class MNQDeltaTrendTrader {
       delta: signed,
     };
 
-    // NT8 PARITY: Save this bar's close as reference for next bar's delta
+    // : Save this bar's close as reference for next bar's delta
     this.prevBarClose = closePx!;
 
     // Reset accumulators for next bar

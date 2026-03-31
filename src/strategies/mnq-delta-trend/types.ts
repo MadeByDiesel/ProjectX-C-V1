@@ -1,4 +1,3 @@
-
 // === Strategy configuration (Pine-parity) ===
 export interface StrategyConfig {
   // SYMBOL / SESSION
@@ -66,7 +65,10 @@ export interface StrategyConfig {
   intraBarConfirmationWindowMs?: number;    // Time window for confirmations (default: 500ms)
 
   htfMarginThreshold?: number;
-  usePrevBarDirectionFilter?: boolean
+  usePrevBarDirectionFilter?: boolean;
+
+  // Cooldown (Mar27)
+  intraBarCooldownMs?: number;         // cooldown between intra-bar signals (validated: 4000ms)
 }
 
 // === Bar / Market / Signal types used by calculator & trader ===

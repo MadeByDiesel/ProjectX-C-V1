@@ -225,6 +225,55 @@
               </div>
             </div>
 
+            <!-- Filters (Mar27) -->
+            <div>
+              <h4 class="text-sm text-gray-400 mb-2">Filters</h4>
+              <div class="grid grid-cols-2 gap-3">
+                <div>
+                  <label class="text-sm text-gray-300">ATR Cap (pts)</label>
+                  <input type="number" step="1" x-model.number="configs.atrCap" @input="markDirty()"
+                         class="mt-1 w-full p-2 bg-gray-700 rounded text-white"/>
+                </div>
+                <div>
+                  <label class="text-sm text-gray-300">HTF Margin Threshold</label>
+                  <input type="number" step="1" x-model.number="configs.htfMarginThreshold" @input="markDirty()"
+                         class="mt-1 w-full p-2 bg-gray-700 rounded text-white"/>
+                </div>
+                <div class="flex items-end gap-2">
+                  <input id="usePrevBarDir" type="checkbox" x-model="configs.usePrevBarDirectionFilter" @change="markDirty()"
+                         class="h-5 w-5 accent-blue-600 bg-gray-700 rounded"/>
+                  <label for="usePrevBarDir" class="text-sm text-gray-300">PrevBar Direction Filter</label>
+                </div>
+              </div>
+            </div>
+
+            <!-- Intra-bar Timing (Mar27) -->
+            <div>
+              <h4 class="text-sm text-gray-400 mb-2">Intra-bar Timing</h4>
+              <div class="grid grid-cols-2 gap-3">
+                <div>
+                  <label class="text-sm text-gray-300">Accumulation (ms)</label>
+                  <input type="number" step="100" x-model.number="configs.intraBarMinAccumulationMs" @input="markDirty()"
+                         class="mt-1 w-full p-2 bg-gray-700 rounded text-white"/>
+                </div>
+                <div>
+                  <label class="text-sm text-gray-300">Confirm Window (ms)</label>
+                  <input type="number" step="50" x-model.number="configs.intraBarConfirmationWindowMs" @input="markDirty()"
+                         class="mt-1 w-full p-2 bg-gray-700 rounded text-white"/>
+                </div>
+                <div>
+                  <label class="text-sm text-gray-300">Confirm Checks</label>
+                  <input type="number" step="1" x-model.number="configs.intraBarConfirmationChecks" @input="markDirty()"
+                         class="mt-1 w-full p-2 bg-gray-700 rounded text-white"/>
+                </div>
+                <div>
+                  <label class="text-sm text-gray-300">Cooldown (ms)</label>
+                  <input type="number" step="500" x-model.number="configs.intraBarCooldownMs" @input="markDirty()"
+                         class="mt-1 w-full p-2 bg-gray-700 rounded text-white"/>
+                </div>
+              </div>
+            </div>
+
             <!-- Actions -->
             <div class="flex items-center gap-3 pt-2">
               <button @click="applyConfig()" :disabled="!dirty || !selectedAccountId || busy"
@@ -300,12 +349,12 @@
           // DELTA CONFIGURATION
           deltaSMALength: 20,
           deltaSpikeThreshold: 450,
-          deltaSurgeMultiplier: 1.4,
+          deltaSurgeMultiplier: 1.8,
           breakoutLookbackBars: 20,
           deltaSlopeExitLength: 3,
 
           // EMA CONFIGURATION
-          emaLength: 9,
+          emaLength: 21,
           useEmaFilter: true,
           htfEMALength: 9,
           higherTimeframe: 15,
@@ -319,8 +368,19 @@
 
           // TRAILING STOP CONFIGURATION
           useTrailingStop: true,
-          trailActivationATR: 0.3,
+          trailActivationATR: 0.125,
           trailOffsetATR: 0.125,
+
+          // FILTERS
+          atrCap: 10,
+          htfMarginThreshold: 15,
+          usePrevBarDirectionFilter: true,
+
+          // INTRA-BAR TIMING
+          intraBarMinAccumulationMs: 2500,
+          intraBarConfirmationWindowMs: 300,
+          intraBarConfirmationChecks: 3,
+          intraBarCooldownMs: 4000,
 
           // POSITION SIZING
           contractQuantity: 1
@@ -407,7 +467,18 @@
               // trailing
               useTrailingStop: this.configs.useTrailingStop,
               trailActivationATR: this.configs.trailActivationATR,
-              trailOffsetATR: this.configs.trailOffsetATR
+              trailOffsetATR: this.configs.trailOffsetATR,
+
+              // filters
+              atrCap: this.configs.atrCap,
+              htfMarginThreshold: this.configs.htfMarginThreshold,
+              usePrevBarDirectionFilter: this.configs.usePrevBarDirectionFilter,
+
+              // intra-bar timing
+              intraBarMinAccumulationMs: this.configs.intraBarMinAccumulationMs,
+              intraBarConfirmationWindowMs: this.configs.intraBarConfirmationWindowMs,
+              intraBarConfirmationChecks: this.configs.intraBarConfirmationChecks,
+              intraBarCooldownMs: this.configs.intraBarCooldownMs
             };
 
             const r = await API('/api/strategy/config', {

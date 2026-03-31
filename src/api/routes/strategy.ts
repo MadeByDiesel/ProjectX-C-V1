@@ -72,7 +72,18 @@ router.put('/config', async (req: Request, res: Response) => {
       // Trailing
       'useTrailingStop',           // ← add
       'trailActivationATR',
-      'trailOffsetATR'
+      'trailOffsetATR',
+
+      // Intra-bar timing (Mar27: allow runtime tuning)
+      'intraBarMinAccumulationMs',
+      'intraBarConfirmationWindowMs',
+      'intraBarConfirmationChecks',
+      'intraBarCooldownMs',
+
+      // Filters (Mar27: allow runtime tuning)
+      'atrCap',
+      'htfMarginThreshold',
+      'usePrevBarDirectionFilter'
     ];
 
     const body = req.body ?? {};
@@ -209,7 +220,7 @@ router.post('/start', async (req: Request, res: Response) => {
       contractId,
       symbol
     });
-    
+
     // ADD THESE TWO LINES
     (global as any).trader = strategy;
     (global as any).projectXClient = client;
