@@ -1,4 +1,4 @@
-// calculator.ts — Dec26 Claude - Fixed code with session reset, breakout tolerance, EMA tolerance
+// REVERTED MARCH 25 code
 // Mar12: Added minAbsDeltaSMA floor — blocks entries when 20-bar SMA has no directional bias (chop regime).
 //   Applies to both bar-close and intra-bar signal paths.
 // Mar20: Added prevBar direction agreement filter (usePrevBarDirectionFilter).

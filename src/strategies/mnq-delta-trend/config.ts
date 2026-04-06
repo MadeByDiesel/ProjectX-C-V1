@@ -63,7 +63,7 @@ export const MNQ_DELTA_TREND_CONFIG: StrategyConfig = {
   htfMarginThreshold: 15,
 
   // Cooldown between intra-bar signals (Mar27: was hardcoded 2000ms)
-  intraBarCooldownMs: 4000,
+  intraBarCooldownMs: 2000,
 
   sendWebhook: false,
   webhookUrl: '' //'http://192.168.4.170:8080/signal?secret=toast',
